@@ -1,0 +1,134 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>WikiDéfi — Duel Chronologique Rétro</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Space+Grotesk:wght@400;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="crt-overlay" aria-hidden="true"></div>
+
+  <div class="app-container">
+    <!-- En-tête Arcade -->
+    <header class="arcade-header">
+      <div class="brand">
+        <span class="badge-retro">INSERT COIN</span>
+        <h1>WIKI<span>DÉFI</span></h1>
+      </div>
+
+      <div class="scoreboard">
+        <div class="stat-box">
+          <span class="stat-label">SCORE</span>
+          <span id="score-value" class="stat-num">0</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">SÉRIE</span>
+          <span id="streak-value" class="stat-num">0</span>
+        </div>
+        <div class="stat-box">
+          <span class="stat-label">RECORD</span>
+          <span id="best-value" class="stat-num">0</span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Barre de contrôle (Difficulté + Son) -->
+    <section class="controls-bar" aria-label="Paramètres de partie">
+      <div class="difficulty-group" role="group" aria-label="Choix de la difficulté">
+        <button class="diff-btn active" data-level="Facile">FACILE</button>
+        <button class="diff-btn" data-level="Moyen">MOYEN</button>
+        <button class="diff-btn" data-level="Avancé">AVANCÉ</button>
+      </div>
+
+      <div class="actions-group">
+        <button id="sound-toggle" class="icon-btn" title="Activer/Couper le son" aria-label="Son">
+          SFX: ON
+        </button>
+        <button id="new-round-btn" class="primary-btn">
+          NOUVEAU DUEL
+        </button>
+      </div>
+    </section>
+
+    <!-- Bannière de gestion d'erreurs -->
+    <div id="error-banner" class="error-banner hidden" role="alert">
+      <div class="error-header">
+        <span id="error-code" class="error-code">ERREUR</span>
+        <strong id="error-title">Un problème est survenu</strong>
+      </div>
+      <p id="error-message"></p>
+      <p id="error-hint" class="error-hint"></p>
+      <button id="retry-btn" class="retry-btn">RÉESSAYER</button>
+    </div>
+
+    <!-- Consigne principale -->
+    <main id="game-arena">
+      <p class="prompt-banner">
+        LEQUEL DE CES DEUX ÉLÉMENTS EST LE <span>PLUS ANCIEN</span> ?
+      </p>
+
+      <!-- État de chargement -->
+      <div id="loader" class="loader-box hidden">
+        <div class="pixel-spinner"></div>
+        <p id="loader-text">INTERROGATION DE GROQ AI & WIKIPÉDIA...</p>
+      </div>
+
+      <!-- Arène de duel (2 cartes) -->
+      <div id="cards-grid" class="cards-grid">
+        <!-- Carte A -->
+        <article id="card-0" class="wiki-card" tabindex="0" role="button" aria-label="Choisir l'élément 1">
+          <div class="card-tag">JOUEUR 1</div>
+          <div class="card-img-wrapper">
+            <img id="img-0" src="" alt="" />
+            <div id="img-fallback-0" class="img-fallback hidden">AUCUNE IMAGE WIKI</div>
+          </div>
+          <div class="card-body">
+            <h2 id="title-0" class="card-title">—</h2>
+            <p id="desc-0" class="card-desc">En attente de chargement...</p>
+          </div>
+          <div id="reveal-0" class="card-reveal hidden">
+            <span id="year-0" class="reveal-year">????</span>
+            <a id="link-0" href="#" target="_blank" rel="noopener noreferrer" class="wiki-link">
+              VOIR SUR WIKIPÉDIA ↗
+            </a>
+          </div>
+        </article>
+
+        <div class="vs-badge" aria-hidden="true">VS</div>
+
+        <!-- Carte B -->
+        <article id="card-1" class="wiki-card" tabindex="0" role="button" aria-label="Choisir l'élément 2">
+          <div class="card-tag">JOUEUR 2</div>
+          <div class="card-img-wrapper">
+            <img id="img-1" src="" alt="" />
+            <div id="img-fallback-1" class="img-fallback hidden">AUCUNE IMAGE WIKI</div>
+          </div>
+          <div class="card-body">
+            <h2 id="title-1" class="card-title">—</h2>
+            <p id="desc-1" class="card-desc">En attente de chargement...</p>
+          </div>
+          <div id="reveal-1" class="card-reveal hidden">
+            <span id="year-1" class="reveal-year">????</span>
+            <a id="link-1" href="#" target="_blank" rel="noopener noreferrer" class="wiki-link">
+              VOIR SUR WIKIPÉDIA ↗
+            </a>
+          </div>
+        </article>
+      </div>
+
+      <!-- Résultat du duel -->
+      <div id="result-panel" class="result-panel hidden">
+        <p id="result-verdict" class="result-verdict"></p>
+        <p id="result-detail" class="result-detail"></p>
+        <button id="next-btn" class="primary-btn">MANCHE SUIVANTE ▶</button>
+      </div>
+    </main>
+  </div>
+
+  <script src="script.js?v=2"></script>
+</body>
+</html>
