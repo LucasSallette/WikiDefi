@@ -1,7 +1,5 @@
 /**
- * WikiDéfi - Logique principale
- * - Génération des paires et descriptions sans dates via groq.php
- * - Vérification des images et des dates via l'API Wikipédia FR
+ * WikiDéfi - Client robuste avec auto-correction Wikipédia et retry silencieux
  */
 
 class WikiDefiError extends Error {
@@ -12,6 +10,8 @@ class WikiDefiError extends Error {
     this.hint = hint;
   }
 }
+
+const MAX_AUTO_RETRIES = 3;
 
 const state = {
   difficulty: 'Facile',
@@ -47,7 +47,7 @@ const dom = {
   nextBtn: document.getElementById('next-btn'),
 };
 
-// Effets sonores 8-bit (Web Audio API)
+// Synthétiseur audio 8-bit
 const audioCtx = new (window.AudioContext || window.webkitAudioContext)();
 
 function playTone(freq, duration, type = 'square', delay = 0) {
@@ -65,7 +65,7 @@ function playTone(freq, duration, type = 'square', delay = 0) {
     osc.start(audioCtx.currentTime + delay);
     osc.stop(audioCtx.currentTime + delay + duration);
   } catch {
-    // Ignoré si bloqué avant interaction utilisateur
+    // Ignore si bloqué avant clic
   }
 }
 
@@ -86,221 +86,199 @@ const sfx = {
   },
 };
 
-/**
- * Masque toute année ou siècle qui aurait pu glisser dans la description
- */
 function sanitizeDescription(text) {
+  if (!text) return 'Élément historique ou culturel issu de Wikipédia.';
   return text
     .replace(/\b(1[0-9]{3}|20[0-2][0-9])\b/g, '[date masquée]')
-    .replace(/\b(XIXe|XXe|XXIe|XVIIIe|XVIIe|XVIe)\s+siècle\b/gi, 'époque passée')
+    .replace(/\b(I|V|X|L|C|D|M)+e\s+siècle\b/gi, 'époque passée')
+    .replace(/\b(années\s+[0-9]{2,4})\b/gi, 'période passée')
     .trim();
 }
 
 /**
- * Demande 2 éléments à l'API Groq selon le niveau choisi
+ * Résout l'URL exacte de groq.php dans le même répertoire que la page courante
  */
-async function fetchPairFromGroq() {
+function getBackendUrl() {
+  const path = window.location.pathname;
+  const dir = path.endsWith('/') ? path : path.substring(0, path.lastIndexOf('/') + 1);
+  return `${window.location.origin}${dir}groq.php`;
+}
+
+/**
+ * Appelle groq.php pour obtenir un pool de 4 candidats
+ */
+async function fetchCandidatesFromBackend() {
   if (window.location.protocol === 'file:') {
     throw new WikiDefiError(
-      'PHP_REQUIRED',
+      'PHP_LOCAL',
       'Serveur PHP requis',
-      'Le jeu doit être ouvert depuis un site qui exécute groq.php.',
-      'Ouvrez l’adresse HTTP ou HTTPS du site.'
+      'Le fichier index.html a été ouvert directement (file://) sans serveur PHP.',
+      'Lancez un serveur PHP local (ex: "php -S localhost:8000" ou WAMP/XAMPP/Laragon).'
     );
   }
 
+  const backendUrl = getBackendUrl();
   let res;
+  let rawText;
   try {
-    res = await fetch('./groq.php', {
+    res = await fetch(backendUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         difficulty: state.difficulty,
-        excludedTitles: Array.from(state.usedTitles).slice(-20),
+        excluded: Array.from(state.usedTitles).slice(-30),
       }),
     });
+    rawText = await res.text();
   } catch {
     throw new WikiDefiError(
-      'GROQ_NET',
-      'Serveur du jeu injoignable',
-      'Le navigateur n’a pas pu joindre groq.php.',
-      'Vérifiez votre connexion et réessayez.'
+      'NET_ERR',
+      'Serveur inaccessible',
+      `Impossible de joindre ${backendUrl}.`,
+      'Vérifiez que votre serveur web est bien démarré.'
     );
   }
 
-  const data = await res.json().catch(() => null);
-  if (!data || res.status === 404) {
+  // Détection si le serveur renvoie le code source PHP brut (PHP non exécuté)
+  if (rawText.trim().startsWith('<?php')) {
     throw new WikiDefiError(
-      'PHP_ENDPOINT',
-      'Réponse PHP indisponible',
-      'Le serveur du jeu n’a pas renvoyé la réponse attendue.',
-      'Vérifiez que groq.php est publié à côté de index.html et que PHP est actif sur le domaine.'
+      'PHP_INACTIVE',
+      'PHP n’est pas exécuté par le serveur',
+      'Le serveur a renvoyé le code brut de groq.php au lieu de l’exécuter.',
+      'Activez PHP sur votre hébergement (ex: hébergement statique type GitHub Pages/Netlify ne supporte pas PHP).'
     );
   }
 
-  if (data.error === 'GROQ_CONFIG') {
-    throw new WikiDefiError(
-      'GROQ_CONFIG',
-      'Clé Groq manquante ou illisible sur le serveur',
-      'PHP n’a pas trouvé de clé au format attendu.',
-      'Configurez GROQ_API_KEY sur le serveur ou placez le fichier dans private/.env, à côté de public_html.'
-    );
-  }
-
-  if (data.error === 'PHP_CURL_MISSING' || data.error === 'GROQ_TRANSPORT') {
-    throw new WikiDefiError(
-      data.error,
-      'Le serveur du jeu ne parvient pas à joindre Groq',
-      data.error === 'PHP_CURL_MISSING'
-        ? 'L’extension PHP cURL est indisponible.'
-        : 'La connexion du serveur à api.groq.com a échoué.',
-      'Vérifiez l’extension PHP cURL et l’accès HTTPS sortant du serveur.'
-    );
-  }
-
-  const upstreamStatus = data.upstreamStatus;
-  if (upstreamStatus === 401 || upstreamStatus === 403) {
-    throw new WikiDefiError(
-      'GROQ ' + upstreamStatus,
-      'Accès à Groq refusé',
-      'Groq a refusé la clé ou l’accès au modèle.',
-      'Vérifiez la clé et les autorisations du projet dans la console Groq.'
-    );
-  }
-
-  if (res.status === 429) {
-    throw new WikiDefiError(
-      'GROQ 429',
-      'Limite de requêtes Groq atteinte',
-      'Groq a limité les requêtes.',
-      'Patientez un instant avant de réessayer.'
-    );
-  }
-
-  if (data.error === 'GROQ_EMPTY') {
-    throw new WikiDefiError(
-      'GROQ_EMPTY',
-      'Réponse vide de Groq AI',
-      'L’IA n’a renvoyé aucun contenu.',
-      'Cliquez sur RÉESSAYER.'
-    );
-  }
-
-  if (!res.ok) {
-    throw new WikiDefiError(
-      upstreamStatus ? 'GROQ ' + upstreamStatus : 'HTTP ' + res.status,
-      'Impossible de générer le duel',
-      'Le serveur du jeu ou Groq a renvoyé une erreur.',
-      'Réessayez dans un instant.'
-    );
-  }
-
-  let parsed;
+  let data;
   try {
-    parsed = JSON.parse(data.content);
+    data = JSON.parse(rawText);
   } catch {
+    data = null;
+  }
+
+  if (data?.error === true) {
     throw new WikiDefiError(
-      'JSON_PARSE',
-      'Format de réponse IA invalide',
-      'La réponse renvoyée par Groq n’était pas un JSON valide.',
-      'Cliquez sur RÉESSAYER pour relancer.'
+      data.code || `HTTP ${res.status}`,
+      data.title || 'Erreur Groq AI',
+      data.message || 'Une erreur est survenue lors de la génération.',
+      data.hint || 'Cliquez sur RÉESSAYER.'
     );
   }
 
-  const items = parsed?.items;
-  if (!Array.isArray(items) || items.length < 2 || items.slice(0, 2).some((item) => (
-    typeof item?.wikiTitle !== 'string' || !item.wikiTitle.trim() ||
-    typeof item.description !== 'string' || !Number.isInteger(Number(item.estimatedYear)) || !Number(item.estimatedYear)
-  ))) {
+  if (!res.ok || !Array.isArray(data?.items)) {
+    const diagnostics = {
+      403: ['Accès à groq.php refusé', 'Vérifiez les règles d’accès du domaine et les droits du fichier.'],
+      404: ['Fichier groq.php introuvable à cette adresse', 'Vérifiez le dossier public du domaine et extrayez les fichiers du ZIP directement à côté de index.html.'],
+      405: ['Les requêtes POST vers groq.php sont refusées', 'Vérifiez que ce domaine utilise un hébergement qui exécute PHP.'],
+      500: ['Erreur PHP ou serveur', 'Consultez le journal d’erreurs PHP du domaine.'],
+      502: ['Le serveur ne reçoit pas de réponse de PHP', 'Vérifiez PHP-FPM et le journal d’erreurs du domaine.'],
+      503: ['Service PHP ou web indisponible', 'Vérifiez l’état des services web du domaine.'],
+      504: ['Le serveur a dépassé le délai d’attente', 'Vérifiez les journaux PHP et la connexion sortante vers Groq.'],
+    };
+    const [title, hint] = diagnostics[res.status] || [
+      'Réponse inattendue de groq.php',
+      'Ouvrez cette adresse dans le navigateur. Le diagnostic doit afficher le service wikidefi-groq et le statut ok.',
+    ];
     throw new WikiDefiError(
-      'INVALID_PAIR',
-      'Paire d’éléments incomplète',
-      'Groq AI n’a pas renvoyé deux éléments comparables.',
-      'Cliquez sur RÉESSAYER.'
+      `HTTP ${res.status}`,
+      title,
+      `Adresse appelée : ${backendUrl}`,
+      hint
     );
   }
 
-  return items.slice(0, 2);
+  return data.items;
 }
 
-/**
- * Récupère l'image, le lien et confirme l'année via l'API Wikipédia FR
- */
-async function enrichWithWikipedia(aiItem) {
-  const encodedTitle = encodeURIComponent(aiItem.wikiTitle.trim());
-  const summaryUrl = `https://fr.wikipedia.org/api/rest_v1/page/summary/${encodedTitle}`;
+async function getWikiSummaryByTitle(title) {
+  const encoded = encodeURIComponent(title.trim());
+  const url = `https://fr.wikipedia.org/api/rest_v1/page/summary/${encoded}`;
+  const res = await fetch(url, { headers: { Accept: 'application/json' } });
 
-  let res;
+  if (!res.ok) return null;
+  const data = await res.json();
+
+  if (data.type === 'disambiguation' || !data.extract) return null;
+  return data;
+}
+
+async function searchBestWikiArticle(query) {
+  const params = new URLSearchParams({
+    action: 'query',
+    list: 'search',
+    srsearch: query,
+    srlimit: '3',
+    format: 'json',
+    origin: '*',
+  });
+
+  const res = await fetch(`https://fr.wikipedia.org/w/api.php?${params.toString()}`);
+  if (!res.ok) return null;
+
+  const data = await res.json();
+  const hits = data?.query?.search || [];
+
+  for (const hit of hits) {
+    const summary = await getWikiSummaryByTitle(hit.title);
+    if (summary) return summary;
+  }
+  return null;
+}
+
+async function tryEnrichCandidate(aiItem) {
   try {
-    res = await fetch(summaryUrl, {
-      headers: { Accept: 'application/json' },
-    });
+    if (!aiItem || !aiItem.wikiTitle) return null;
+
+    let wikiData = await getWikiSummaryByTitle(aiItem.wikiTitle);
+    if (!wikiData) {
+      const fallbackQuery = aiItem.searchQuery || aiItem.wikiTitle;
+      wikiData = await searchBestWikiArticle(fallbackQuery);
+    }
+
+    if (!wikiData) return null;
+
+    const extractText = wikiData.extract || '';
+    const yearMatches = extractText.match(/\b(1[0-9]{3}|20[0-2][0-9])\b/g);
+    let verifiedYear = Number(aiItem.estimatedYear);
+
+    if (yearMatches && yearMatches.length > 0) {
+      const numericYears = yearMatches.map(Number);
+      numericYears.sort((a, b) => Math.abs(a - verifiedYear) - Math.abs(b - verifiedYear));
+      if (!Number.isNaN(verifiedYear) && Math.abs(numericYears[0] - verifiedYear) <= 25) {
+        verifiedYear = numericYears[0];
+      } else if (Number.isNaN(verifiedYear)) {
+        verifiedYear = numericYears[0];
+      }
+    }
+
+    if (!verifiedYear || Number.isNaN(verifiedYear)) return null;
+
+    return {
+      title: wikiData.title,
+      description: sanitizeDescription(aiItem.description),
+      image: wikiData.thumbnail?.source || wikiData.originalimage?.source || null,
+      url:
+        wikiData.content_urls?.desktop?.page ||
+        `https://fr.wikipedia.org/wiki/${encodeURIComponent(wikiData.title)}`,
+      year: verifiedYear,
+    };
   } catch {
-    throw new WikiDefiError(
-      'WIKI_NET',
-      'Connexion impossible à Wikipédia',
-      'Impossible de joindre fr.wikipedia.org.',
-      'Vérifiez votre connexion Internet.'
-    );
+    return null;
   }
+}
 
-  if (res.status === 404) {
-    throw new WikiDefiError(
-      'WIKI 404',
-      `Page Wikipédia introuvable : "${aiItem.wikiTitle}"`,
-      'L’élément généré n’existe pas sous ce titre sur Wikipédia FR.',
-      'Cliquez sur RÉESSAYER pour tirer un autre duel.'
-    );
-  }
-
-  if (!res.ok) {
-    throw new WikiDefiError(
-      `WIKI ${res.status}`,
-      'Erreur API Wikipédia',
-      `Wikipédia a renvoyé un statut HTTP ${res.status}.`,
-      'Réessayez dans quelques secondes.'
-    );
-  }
-
-  const wikiData = await res.json();
-
-  if (wikiData.type === 'disambiguation') {
-    throw new WikiDefiError(
-      'WIKI_AMBIGUOUS',
-      `Page d’homonymie : "${wikiData.title}"`,
-      'Ce sujet correspond à plusieurs pages Wikipédia différentes.',
-      'Cliquez sur RÉESSAYER pour générer une paire plus précise.'
-    );
-  }
-
-  const extractText = wikiData.extract || '';
-  const yearMatches = extractText.match(/\b(1[0-9]{3}|20[0-2][0-9])\b/g);
-  let verifiedYear = Number(aiItem.estimatedYear);
-
-  if (yearMatches && yearMatches.length > 0) {
-    const numericYears = yearMatches.map(Number);
-    numericYears.sort((a, b) => Math.abs(a - verifiedYear) - Math.abs(b - verifiedYear));
-    if (Math.abs(numericYears[0] - verifiedYear) <= 25) {
-      verifiedYear = numericYears[0];
+function pickDistinctPair(validItems) {
+  for (let i = 0; i < validItems.length; i++) {
+    for (let j = i + 1; j < validItems.length; j++) {
+      if (
+        validItems[i].title !== validItems[j].title &&
+        validItems[i].year !== validItems[j].year
+      ) {
+        return [validItems[i], validItems[j]];
+      }
     }
   }
-
-  if (!verifiedYear || Number.isNaN(verifiedYear)) {
-    throw new WikiDefiError(
-      'NO_DATE',
-      `Date introuvable pour "${wikiData.title}"`,
-      'Impossible d’extraire une année de référence valide.',
-      'Cliquez sur RÉESSAYER.'
-    );
-  }
-
-  return {
-    title: wikiData.title,
-    description: sanitizeDescription(aiItem.description),
-    image: wikiData.thumbnail?.source || wikiData.originalimage?.source || null,
-    url: wikiData.content_urls?.desktop?.page || `https://fr.wikipedia.org/wiki/${encodedTitle}`,
-    year: verifiedYear,
-  };
+  return null;
 }
 
 function showError(err) {
@@ -311,7 +289,7 @@ function showError(err) {
 
   dom.errorCode.textContent = err.code || 'ERREUR';
   dom.errorTitle.textContent = err.title || 'Erreur inattendue';
-  dom.errorMessage.textContent = err.message || 'Une erreur inconnue est survenue.';
+  dom.errorMessage.textContent = err.message || 'Une erreur est survenue.';
 
   if (err.hint) {
     dom.errorHint.textContent = `💡 Solution : ${err.hint}`;
@@ -344,38 +322,65 @@ async function startNewRound() {
   dom.loader.classList.remove('hidden');
   dom.newRoundBtn.disabled = true;
 
+  let lastError = null;
+
   try {
-    dom.loaderText.textContent = `GÉNÉRATION DU DUEL (${state.difficulty.toUpperCase()}) VIA GROQ AI...`;
-    const aiPair = await fetchPairFromGroq();
+    for (let attempt = 1; attempt <= MAX_AUTO_RETRIES; attempt++) {
+      try {
+        dom.loaderText.textContent =
+          attempt === 1
+            ? `GÉNÉRATION DU DUEL (${state.difficulty.toUpperCase()})...`
+            : `AJUSTEMENT DES ARTICLES WIKIPÉDIA (TENTATIVE ${attempt}/${MAX_AUTO_RETRIES})...`;
 
-    dom.loaderText.textContent = 'VÉRIFICATION DES ARTICLES & IMAGES SUR WIKIPÉDIA...';
-    const [item0, item1] = await Promise.all([
-      enrichWithWikipedia(aiPair[0]),
-      enrichWithWikipedia(aiPair[1]),
-    ]);
+        const candidates = await fetchCandidatesFromBackend();
 
-    if (item0.year === item1.year) {
-      throw new WikiDefiError(
-        'EQUAL_DATES',
-        'Égalité chronologique détectée',
-        `Les deux éléments datent de la même année (${item0.year}).`,
-        'Cliquez sur RÉESSAYER pour obtenir deux époques différentes.'
-      );
+        dom.loaderText.textContent = 'VÉRIFICATION SUR WIKIPÉDIA FR...';
+        const enrichedResults = await Promise.all(
+          candidates.map((cand) => tryEnrichCandidate(cand))
+        );
+
+        const validItems = enrichedResults.filter(Boolean);
+        const pair = pickDistinctPair(validItems);
+
+        if (!pair) {
+          throw new WikiDefiError(
+            'WIKI_MATCH',
+            'Impossible d’associer deux articles distincts',
+            'Les sujets générés n’avaient pas assez d’articles Wikipédia distincts.',
+            'Cliquez sur RÉESSAYER pour générer une nouvelle série.'
+          );
+        }
+
+        state.currentItems = pair;
+        state.usedTitles.add(pair[0].title);
+        state.usedTitles.add(pair[1].title);
+
+        renderCards();
+        dom.loader.classList.add('hidden');
+        dom.cardsGrid.classList.remove('hidden');
+        return;
+      } catch (err) {
+        lastError =
+          err instanceof WikiDefiError
+            ? err
+            : new WikiDefiError('UNKNOWN', 'Erreur inattendue', err.message || String(err));
+
+        const fatalCodes = [
+          'ENV_404',
+          'ENV_READ_ERR',
+          'MISSING_KEY',
+          'GROQ_401',
+          'GROQ_403',
+          'PHP_LOCAL',
+          'PHP_INACTIVE',
+        ];
+        if (fatalCodes.includes(lastError.code)) {
+          break;
+        }
+      }
     }
 
-    state.currentItems = [item0, item1];
-    state.usedTitles.add(item0.title);
-    state.usedTitles.add(item1.title);
-
-    renderCards();
-    dom.loader.classList.add('hidden');
-    dom.cardsGrid.classList.remove('hidden');
-  } catch (err) {
-    const normalizedError =
-      err instanceof WikiDefiError
-        ? err
-        : new WikiDefiError('UNKNOWN', 'Erreur critique', err.message || String(err));
-    showError(normalizedError);
+    showError(lastError);
   } finally {
     state.isLoading = false;
     dom.newRoundBtn.disabled = false;
